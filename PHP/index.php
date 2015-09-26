@@ -19,8 +19,7 @@ ob_start();
 /* config settings */
 $base = "http://www.bbc.co.uk";  //set this to the url you want to scrape
 $ckfile = '/tmp/simpleproxy-cookie-'.session_id();  //this can be set to anywhere you fancy!  just make sure it is secure.
-
-
+$UploadDirectory='Upload'; //Make sure this directory exists with the proper write permissions
 
 /* all system code happens below - you should not need to edit it! */
 
@@ -43,8 +42,15 @@ $curlSession = curl_init();
 curl_setopt ($curlSession, CURLOPT_URL, $url);
 curl_setopt ($curlSession, CURLOPT_HEADER, 1);
 
-
 if($_SERVER['REQUEST_METHOD'] == 'POST'){
+	//Add files to the post object
+	foreach($_FILES as $FieldName => $FileInfo)
+	{
+		$FileInfo['name']=str_replace('/', '', $FileInfo['name']); //Remove forward slashes from filename for security reasons
+		move_uploaded_file($FileInfo['tmp_name'], "$UploadDirectory/$FileInfo[name]");
+		$_POST[$FieldName]="@$UploadDirectory/$FileInfo[name]".(isset($FileInfo['type']) ? ";type=$FileInfo[type]" : '');
+	}
+
 	curl_setopt ($curlSession, CURLOPT_POST, 1);
 	curl_setopt ($curlSession, CURLOPT_POSTFIELDS, $_POST);
 }
@@ -52,8 +58,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
 curl_setopt($curlSession, CURLOPT_RETURNTRANSFER,1);
 curl_setopt($curlSession, CURLOPT_TIMEOUT,30);
 curl_setopt($curlSession, CURLOPT_SSL_VERIFYHOST, 1);
-curl_setopt ($curlSession, CURLOPT_COOKIEJAR, $ckfile); 
-curl_setopt ($curlSession, CURLOPT_COOKIEFILE, $ckfile);
+curl_setopt($curlSession, CURLOPT_COOKIEJAR, $ckfile);
+curl_setopt($curlSession, CURLOPT_COOKIEFILE, $ckfile);
 
 //handle other cookies cookies
 foreach($_COOKIE as $k=>$v){
@@ -68,21 +74,20 @@ $response = curl_exec ($curlSession);
 
 // Check that a connection was made
 if (curl_error($curlSession)){
-        // If it wasn't...
-        print curl_error($curlSession);
+	// If it wasn't...
+	print curl_error($curlSession);
 } else {
-
 	//clean duplicate header that seems to appear on fastcgi with output buffer on some servers!!
 	$response = str_replace("HTTP/1.1 100 Continue\r\n\r\n","",$response);
 
-	$ar = explode("\r\n\r\n", $response, 2); 
+	$ar = explode("\r\n\r\n", $response, 2);
 
 
 	$header = $ar[0];
 	$body = $ar[1];
 
 	//handle headers - simply re-outputing them
-	$header_ar = split(chr(10),$header); 
+	$header_ar = split(chr(10),$header);
 	foreach($header_ar as $k=>$v){
 		if(!preg_match("/^Transfer-Encoding/",$v)){
 			$v = str_replace($base,$mydomain,$v); //header rewrite if needed
@@ -90,7 +95,7 @@ if (curl_error($curlSession)){
 		}
 	}
 
-  //rewrite all hard coded urls to ensure the links still work!
+	//rewrite all hard coded urls to ensure the links still work!
 	$body = str_replace($base,$mydomain,$body);
 
 	print $body;
@@ -99,5 +104,8 @@ if (curl_error($curlSession)){
 
 curl_close ($curlSession);
 
+//Remove uploaded files
+foreach($_FILES as $FileInfo)
+	unlink("$UploadDirectory/$FileInfo[name]");
 
 ?>
