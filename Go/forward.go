@@ -44,6 +44,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	//Swap hosts in the request headers
 	for k, v := range req.Header {
 		req.Header[k] = afh.swapHostArr(v, false)
+		//TODO: Do cookies need to be treated separately hear?
 	}
 	//Update the allowed encodings
 	if req.Header["Accept-Encoding"] != nil && len(req.Header["Accept-Encoding"]) > 0 {
@@ -59,6 +60,8 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	}
 	ModifyForwarderRequest(afh, req) //Custom callback
 
+	//TODO: Should the request itself be host-swapped?
+
 	//Send the request
 	transport := http.Transport{} //Had to use a transport instead of http.Client so that Location header requests would come through instead of being followed
 	resp, err := transport.RoundTrip(req)
@@ -66,7 +69,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		return err
 	}
 
-	//Copy the host-swapped updated headers
+	//Copy the host-swapped updated return headers
 	//TODO: I am not sure if this is safe right now. Some headers might need to be ignored.
 	headers := respWriter.Header()
 	for k, v := range resp.Header {
@@ -75,16 +78,17 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		}
 	}
 
-	//Copy the host-swapped cookies
+	//Copy the host-swapped returned cookies
 	for _, c := range resp.Cookies() {
 		unescaped, err := url.QueryUnescape(c.Value)
 		if err == nil {
 			c.Value = url.QueryEscape(afh.swapHost(unescaped, true))
+			//TODO: More might need to be swapped here, like the Cookie.Domain
 		}
 		http.SetCookie(respWriter, c)
 	}
 
-	//Get the content
+	//Get the response content
 	retContent, _ := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 
