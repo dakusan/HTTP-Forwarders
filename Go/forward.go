@@ -15,7 +15,7 @@ import (
 )
 
 //Handle http requests
-type ArgumentsForwardHandler struct {
+type ConnectionInfo struct {
 	LocalPort, RemotePort                                   int
 	LocalHost, RemoteHost, RemoteProtocol                   string
 	IsRemoteProtocolDefaultPort, IsLocalProtocolDefaultPort string //"1"=true, ""=false - I did them as strings to counteract go’s annoying lack of the conditional operators)
@@ -23,23 +23,23 @@ type ArgumentsForwardHandler struct {
 	CustomAccessOrigin                                      string
 }
 
-func (afh *ArgumentsForwardHandler) forwardHandlerWrapper(respWriter http.ResponseWriter, req *http.Request) {
-	err := afh.forwardHandler(respWriter, req)
+func (ci *ConnectionInfo) forwardHandlerWrapper(respWriter http.ResponseWriter, req *http.Request) {
+	err := ci.forwardHandler(respWriter, req)
 	if err != nil {
 		println(err.Error())
 		http.Error(respWriter, "Bad Gateway: "+err.Error(), 502)
 	}
 }
-func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWriter, req *http.Request) error {
+func (ci *ConnectionInfo) forwardHandler(respWriter http.ResponseWriter, req *http.Request) error {
 	//Get local host/port if not already determined
-	if afh.LocalHost == "" {
-		afh.LocalHost = strings.Split(req.Host, ":")[0]
+	if ci.LocalHost == "" {
+		ci.LocalHost = strings.Split(req.Host, ":")[0]
 	}
 
 	//Update the request object
-	req.Host = afh.swapHost(req.Host, false)
+	req.Host = ci.swapHost(req.Host, false)
 	req.URL.Host = req.Host
-	req.URL.Scheme = afh.RemoteProtocol
+	req.URL.Scheme = ci.RemoteProtocol
 	req.RequestURI = "" //go requires that this be empty
 	req.RemoteAddr = "" //go likes filling this one in itself
 
@@ -54,7 +54,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	//---Update the headers---
 	//Swap hosts in the request headers
 	for k, v := range req.Header {
-		req.Header[k] = afh.swapHostArr(v, false)
+		req.Header[k] = ci.swapHostArr(v, false)
 		//TODO: Do cookies need to be treated separately hear?
 	}
 	//Update the allowed encodings
@@ -69,7 +69,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		}
 		req.Header["Accept-Encoding"][0] = strings.Join(finalEncodings, ", ")
 	}
-	ModifyForwarderRequest(afh, req) //Custom callback
+	ModifyForwarderRequest(ci, req) //Custom callback
 
 	//TODO: Should the request itself be host-swapped?
 
@@ -93,7 +93,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	headers := respWriter.Header()
 	for k, v := range resp.Header {
 		if k != "Set-Cookie" { //Handle cookies separately, since they are encoded
-			headers[k] = afh.swapHostArr(v, true)
+			headers[k] = ci.swapHostArr(v, true)
 		}
 	}
 
@@ -101,15 +101,15 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	newOriginFound := true
 	newAccessControlOrigin := func() string {
 		//Test all the origin types until one succeeds
-		for _, originType := range afh.AccessOrigin {
+		for _, originType := range ci.AccessOrigin {
 			switch originType {
 				case originTypes.Original       : if hasOrigAccessControlOrigin { return origAccessControlOrigin }
 				case originTypes.OriginalSwapped: if hasOrigAccessControlOrigin { return headers["Access-Control-Allow-Origin"][0] }
-				case originTypes.LocalHost      : return afh.swapHost(afh.RemoteHost, true)
-				case originTypes.RemoteHost     : return afh.swapHost(afh.LocalHost, false)
+				case originTypes.LocalHost      : return ci.swapHost(ci.RemoteHost, true)
+				case originTypes.RemoteHost     : return ci.swapHost(ci.LocalHost, false)
 				case originTypes.RequestOrigin  : if hasOrigOrigin { return origOrigin }
 				case originTypes.AcceptAll      : return "*"
-				case originTypes.Custom         : return afh.CustomAccessOrigin
+				case originTypes.Custom         : return ci.CustomAccessOrigin
 				default                         : panic("Should not get here")
 			}
 		}
@@ -128,7 +128,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	for _, c := range resp.Cookies() {
 		unescaped, err := url.QueryUnescape(c.Value)
 		if err == nil {
-			c.Value = url.QueryEscape(afh.swapHost(unescaped, true))
+			c.Value = url.QueryEscape(ci.swapHost(unescaped, true))
 			//TODO: More might need to be swapped here, like the Cookie.Domain
 		}
 		http.SetCookie(respWriter, c)
@@ -153,9 +153,9 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		}
 
 		//Do the swap
-		retContent = []byte(afh.swapHost(string(retContent), true))
+		retContent = []byte(ci.swapHost(string(retContent), true))
 	}
-	retContent = ModifyForwarderReply(afh, respWriter, retContent, req) //Custom callback
+	retContent = ModifyForwarderReply(ci, respWriter, retContent, req) //Custom callback
 
 	//Recompress if required
 	if recompressType != "" {
@@ -202,16 +202,16 @@ func decompress(input []byte, compressType string) ([]byte, string, error) {
 }
 
 //Swap host names on request/receive strings
-func (afh *ArgumentsForwardHandler) swapHostArr(strArr []string, remoteToLocal bool) []string {
+func (ci *ConnectionInfo) swapHostArr(strArr []string, remoteToLocal bool) []string {
 	for i, v := range strArr {
-		strArr[i] = afh.swapHost(v, remoteToLocal)
+		strArr[i] = ci.swapHost(v, remoteToLocal)
 	}
 	return strArr
 }
-func (afh *ArgumentsForwardHandler) swapHost(str string, remoteToLocal bool) string {
+func (ci *ConnectionInfo) swapHost(str string, remoteToLocal bool) string {
 	//Determine the strings to replace and in which direction to replace them
-	remoteStrings := []string{afh.RemoteHost, strconv.Itoa(afh.RemotePort), afh.IsRemoteProtocolDefaultPort}
-	localStrings  := []string{afh.LocalHost, strconv.Itoa(afh.LocalPort), afh.IsLocalProtocolDefaultPort}
+	remoteStrings := []string{ci.RemoteHost, strconv.Itoa(ci.RemotePort), ci.IsRemoteProtocolDefaultPort}
+	localStrings  := []string{ci.LocalHost, strconv.Itoa(ci.LocalPort), ci.IsLocalProtocolDefaultPort}
 	findStrings, replaceStrings := remoteStrings, localStrings
 	if !remoteToLocal {
 		findStrings, replaceStrings = localStrings, remoteStrings
@@ -235,7 +235,7 @@ func main() {
 	println("") //Always start with a blank line
 
 	//Parse the arguments
-	arguments := &ArgumentsForwardHandler{}
+	arguments := &ConnectionInfo{}
 	const defAO string = "OriginalSwapped,RequestOrigin,LocalHost"
 	var accessOrigin string
 	flag.IntVar(   &arguments.LocalPort     , "LocalPort"     , 8080  , "(Optional) The local port you connect to to forward a request")

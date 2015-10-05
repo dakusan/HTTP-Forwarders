@@ -6,7 +6,7 @@ import (
 )
 
 //Called before any other "http" calls
-func InitServer(afh *ArgumentsForwardHandler) {
+func InitServer(ci *ConnectionInfo) {
 
 //Example (Call a custom handler for the url /custom/*)
 //http.HandleFunc("/custom/", customHandler)
@@ -22,7 +22,7 @@ respWriter.Write([]byte("Foobar: "+req.URL.String()))
 }
 
 //Called after request object and headers are created, but before the http request
-func ModifyForwarderRequest(afh *ArgumentsForwardHandler, req *http.Request) {
+func ModifyForwarderRequest(ci *ConnectionInfo, req *http.Request) {
 
 //Example (add a cookie)
 //req.AddCookie(&http.Cookie{Name:"foobar", Value:"baz+bar%3Afoo1"})
@@ -30,7 +30,7 @@ func ModifyForwarderRequest(afh *ArgumentsForwardHandler, req *http.Request) {
 }
 
 //Called after the response headers+cookies have been created and the response content host-swapped, but before the header and contents are written back
-func ModifyForwarderReply(afh *ArgumentsForwardHandler, respWriter http.ResponseWriter, retContent []byte, req *http.Request) []byte {
+func ModifyForwarderReply(ci *ConnectionInfo, respWriter http.ResponseWriter, retContent []byte, req *http.Request) []byte {
 
 //Example (Set a cookie)
 //http.SetCookie(respWriter, &http.Cookie{Name:"foobar", Value:"baz+bar%3Afoo2"})
