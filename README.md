@@ -7,6 +7,8 @@ So I needed an http proxy for a project I am currently working on which lets me 
 
 So I decided to make something in GoLang (Google’s Go), as it is fast and great at handling concurrency. I’ve been hacking at it all day today, and it’s ended up taking a lot more time than I originally planned, but I think it’s pretty perfect now.
 
+**Note: The Go version is much more advanced, reliable, and fast.**
+
 ## Go version
 
 It supports passthrough forwarding of **POST, GET, files, cookies, https**, and anything else that comes up on an http connection (though https takes some tinkering sometimes). It also supports gzip and deflate encoding (it needs to get everything into plain text for modification). It works as a man-in-the-middle, receiving a request, and then transmitting that request to the designation. It runs on a port you specify, and it replaces all instances of the source domain with the destination domain when sending to the destination, and vice-versa when receiving it back.
