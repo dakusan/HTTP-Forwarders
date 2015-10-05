@@ -1,6 +1,7 @@
 package main
 
 import (
+	"./originTypes"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
@@ -17,7 +18,9 @@ import (
 type ArgumentsForwardHandler struct {
 	LocalPort, RemotePort                                   int
 	LocalHost, RemoteHost, RemoteProtocol                   string
-	IsRemoteProtocolDefaultPort, IsLocalProtocolDefaultPort string //"1"=true, ""=false - I did them as strings to counteract go's annoying lack of the conditional operators)
+	IsRemoteProtocolDefaultPort, IsLocalProtocolDefaultPort string //"1"=true, ""=false - I did them as strings to counteract go’s annoying lack of the conditional operators)
+	AccessOrigin                                            []originTypes.OriginType
+	CustomAccessOrigin                                      string
 }
 
 func (afh *ArgumentsForwardHandler) forwardHandlerWrapper(respWriter http.ResponseWriter, req *http.Request) {
@@ -39,6 +42,14 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 	req.URL.Scheme = afh.RemoteProtocol
 	req.RequestURI = "" //go requires that this be empty
 	req.RemoteAddr = "" //go likes filling this one in itself
+
+	//Save the origin
+	var origOrigin string
+	hasOrigOrigin := false
+	if tempVal, tempOK := req.Header["Origin"]; tempOK && len(tempVal)>0 {
+		origOrigin = tempVal[0]
+		hasOrigOrigin = true
+	}
 
 	//---Update the headers---
 	//Swap hosts in the request headers
@@ -69,6 +80,14 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		return err
 	}
 
+	//Save the access control origin
+	var origAccessControlOrigin string
+	hasOrigAccessControlOrigin := false
+	if tempVal, tempOK := resp.Header["Access-Control-Allow-Origin"]; tempOK && len(tempVal)>0 {
+		origAccessControlOrigin = tempVal[0]
+		hasOrigAccessControlOrigin = true
+	}
+
 	//Copy the host-swapped updated return headers
 	//TODO: I am not sure if this is safe right now. Some headers might need to be ignored.
 	headers := respWriter.Header()
@@ -76,6 +95,33 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		if k != "Set-Cookie" { //Handle cookies separately, since they are encoded
 			headers[k] = afh.swapHostArr(v, true)
 		}
+	}
+
+	//Set the access control allow origin
+	newOriginFound := true
+	newAccessControlOrigin := func() string {
+		//Test all the origin types until one succeeds
+		for _, originType := range afh.AccessOrigin {
+			switch originType {
+				case originTypes.Original       : if hasOrigAccessControlOrigin { return origAccessControlOrigin }
+				case originTypes.OriginalSwapped: if hasOrigAccessControlOrigin { return headers["Access-Control-Allow-Origin"][0] }
+				case originTypes.LocalHost      : return afh.swapHost(afh.RemoteHost, true)
+				case originTypes.RemoteHost     : return afh.swapHost(afh.LocalHost, false)
+				case originTypes.RequestOrigin  : if hasOrigOrigin { return origOrigin }
+				case originTypes.AcceptAll      : return "*"
+				case originTypes.Custom         : return afh.CustomAccessOrigin
+				default                         : panic("Should not get here")
+			}
+		}
+
+		//If no origin was found
+		newOriginFound = false
+		return ""
+	}()
+	if !newOriginFound && hasOrigAccessControlOrigin {
+		delete(headers, "Access-Control-Allow-Origin")
+	} else if newOriginFound {
+		headers["Access-Control-Allow-Origin"] = []string{newAccessControlOrigin}
 	}
 
 	//Copy the host-swapped returned cookies
@@ -109,7 +155,7 @@ func (afh *ArgumentsForwardHandler) forwardHandler(respWriter http.ResponseWrite
 		//Do the swap
 		retContent = []byte(afh.swapHost(string(retContent), true))
 	}
-	retContent = ModifyForwarderReply(afh, respWriter, retContent) //Custom callback
+	retContent = ModifyForwarderReply(afh, respWriter, retContent, req) //Custom callback
 
 	//Recompress if required
 	if recompressType != "" {
@@ -190,30 +236,29 @@ func main() {
 
 	//Parse the arguments
 	arguments := &ArgumentsForwardHandler{}
+	const defAO string = "OriginalSwapped,RequestOrigin,LocalHost"
+	var accessOrigin string
 	flag.IntVar(   &arguments.LocalPort     , "LocalPort"     , 8080  , "(Optional) The local port you connect to to forward a request")
 	flag.StringVar(&arguments.RemoteHost    , "RemoteHost"    , ""    , "(Required) The domain host that requests are forwarded to")
 	flag.IntVar(   &arguments.RemotePort    , "RemotePort"    , 80    , "(Optional) The port for the remote domain")
 	flag.StringVar(&arguments.RemoteProtocol, "RemoteProtocol", "http", "(Optional) The protocol (http/https) for the remote domain")
 	flag.StringVar(&arguments.LocalHost     , "LocalHost"     , ""    , "(Optional) The host domain you are connecting to locally. In the response body, the RemoteHost is replaced by the LocalHost. The default is the domain pulled from your first http request")
+	flag.StringVar(&          accessOrigin  , "AccessOrigin"  , defAO , "(Optional) How the “Access-Control-Allow-Origin” is determined. Pass “help” to get more information")
 	flag.Parse()
 
 	//Confirm the arguments
-	errors := false
+	var paramErrors []string
 	if arguments.RemoteHost == "" {
-		println("Error: RemoteHost is required")
-		errors = true
+		paramErrors = append(paramErrors, "Error: RemoteHost is required")
 	}
 	if arguments.LocalPort<1 || arguments.LocalPort>65535 {
-		println("Error: LocalPort must be between 1 and 65535")
-		errors = true
+		paramErrors = append(paramErrors, "Error: LocalPort must be between 1 and 65535")
 	}
 	if arguments.RemotePort<1 || arguments.RemotePort>65535 {
-		println("Error: RemotePort must be between 1 and 65535")
-		errors = true
+		paramErrors = append(paramErrors, "Error: RemotePort must be between 1 and 65535")
 	}
 	if arguments.RemoteProtocol!="http" && arguments.RemoteProtocol!="https" {
-		println("Error: RemoteProtocol must be 'http' or 'https'")
-		errors = true
+		paramErrors = append(paramErrors, "Error: RemoteProtocol must be “http” or “https”")
 	}
 
 	//Sets if the remote protocol is the default port
@@ -231,8 +276,48 @@ func main() {
 		arguments.IsLocalProtocolDefaultPort = "1"
 	}
 
-	//If there are errors, output the defaults and exit
-	if errors {
+	//Output information about the access origin (I like this to happen before errors cause the parameter help screen to show)
+	accessOrigin = strings.ToLower(accessOrigin) //Case insensitive
+	if accessOrigin == "help" {
+		originTypes.GetAccessOriginHelp(true)
+		return
+	}
+
+	//Parse the access origin parameter
+	if accessOrigin != "" {
+		accessOriginStrings := strings.Split(accessOrigin, ",")
+		for i, originTypeStr := range accessOriginStrings {
+			//Get and confirm the Origin Type
+			originTypeStr = strings.TrimSpace(originTypeStr)
+			originType, isValidOriginType := originTypes.Mapping[originTypeStr]
+			if !isValidOriginType {
+				paramErrors = append(paramErrors, "Invalid access origin type: "+originTypeStr)
+				continue
+			} else if originType==originTypes.Custom && arguments.CustomAccessOrigin!="" {
+				paramErrors = append(paramErrors, "You can only have 1 “Custom” Origin Type")
+				continue
+			}
+
+			//Add to the list and only
+			arguments.AccessOrigin = append(arguments.AccessOrigin, originType)
+
+			//Handle the custom type
+			if originType != originTypes.Custom {
+				continue
+			} else if len(accessOriginStrings)<=i+1 {
+				paramErrors = append(paramErrors, "“Custom” requires a parameter")
+			} else {
+				arguments.CustomAccessOrigin = accessOriginStrings[i+1]
+			}
+
+			//Once custom has been handled, there is no point on checking anything else
+			break
+		}
+	}
+
+	//If there are errors, output them and the defaults and exit
+	if len(paramErrors)>0 {
+		println(strings.Join(paramErrors, "\n"))
 		println("\nDefaults:")
 		flag.PrintDefaults()
 		println("") //Add extra space at the end
@@ -240,7 +325,7 @@ func main() {
 	}
 
 	//Create the handler and start listening for requests
-	InitServer() //CustomCallback
+	InitServer(arguments) //CustomCallback
 	http.HandleFunc("/", arguments.forwardHandlerWrapper)
 	http.ListenAndServe(":"+strconv.Itoa(arguments.LocalPort), nil)
 }

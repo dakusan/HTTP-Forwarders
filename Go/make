@@ -1,1 +1,2 @@
-go build forward.go custom.go && echo '"./forward" created'
+#!/bin/bash
+go build forward.go `find . -maxdepth 1 -not -name 'forward.go' -and -name '*.go'` && echo `find . -maxdepth 1 -name 'forward*' -not -name forward.go` created
